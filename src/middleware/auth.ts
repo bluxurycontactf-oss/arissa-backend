@@ -16,17 +16,23 @@ declare global {
 
 function ensureFirebaseApp() {
   if (getApps().length > 0) return;
-  if (!config.firebase.serviceAccountPath) return;
 
-  const serviceAccount = JSON.parse(readFileSync(config.firebase.serviceAccountPath, "utf-8"));
-  initializeApp({ credential: cert(serviceAccount) });
+  let serviceAccount: object | null = null;
+  if (config.firebase.serviceAccountJson) {
+    serviceAccount = JSON.parse(config.firebase.serviceAccountJson);
+  } else if (config.firebase.serviceAccountPath) {
+    serviceAccount = JSON.parse(readFileSync(config.firebase.serviceAccountPath, "utf-8"));
+  }
+
+  if (serviceAccount) initializeApp({ credential: cert(serviceAccount as Parameters<typeof cert>[0]) });
 }
 
 export async function requireAuth(req: Request, res: Response, next: NextFunction) {
-  if (!config.firebase.serviceAccountPath) {
+  const configured = config.firebase.serviceAccountJson || config.firebase.serviceAccountPath;
+  if (!configured) {
     return res.status(500).json({
       error:
-        "Authentification non configurée sur le serveur. Ajoutez FIREBASE_SERVICE_ACCOUNT_PATH dans .env du backend.",
+        "Authentification non configurée. Ajoutez FIREBASE_SERVICE_ACCOUNT_JSON ou FIREBASE_SERVICE_ACCOUNT_PATH dans les variables d'environnement.",
     });
   }
 

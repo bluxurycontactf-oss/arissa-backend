@@ -28,5 +28,6 @@ export const config = {
   },
   firebase: {
     serviceAccountPath: process.env.FIREBASE_SERVICE_ACCOUNT_PATH ?? "",
+    serviceAccountJson: process.env.FIREBASE_SERVICE_ACCOUNT_JSON ?? "",
   },
 };
