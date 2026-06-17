@@ -15,9 +15,11 @@ import {
   disconnectWhatsApp,
   getWhatsAppStatus,
   listWhatsAppContacts,
+  listWhatsAppGroups,
   reconnectWhatsApp,
   requestPairingCode,
   setWhatsAppContactAutoReply,
+  updateWhatsAppGroupSettings,
 } from "../integrations/whatsapp.js";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -212,6 +214,20 @@ agentRouter.patch("/whatsapp/contacts/:jid", (req, res) => {
   const { autoReply } = req.body as { autoReply?: boolean };
   if (typeof autoReply !== "boolean") return res.status(400).json({ error: "autoReply (boolean) est requis." });
   setWhatsAppContactAutoReply(req.tenantId!, req.params.jid, autoReply);
+  res.json({ ok: true });
+});
+
+agentRouter.get("/whatsapp/groups", (req, res) => {
+  res.json({ groups: listWhatsAppGroups(req.tenantId!) });
+});
+
+agentRouter.patch("/whatsapp/groups/:jid", (req, res) => {
+  const { welcomeEnabled, welcomeMessage, antispamEnabled } = req.body as {
+    welcomeEnabled?: boolean;
+    welcomeMessage?: string;
+    antispamEnabled?: boolean;
+  };
+  updateWhatsAppGroupSettings(req.tenantId!, req.params.jid, { welcomeEnabled, welcomeMessage, antispamEnabled });
   res.json({ ok: true });
 });
 

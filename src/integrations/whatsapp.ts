@@ -70,6 +70,79 @@ export function setWhatsAppContactAutoReply(tenantId: string, jid: string, autoR
   );
 }
 
+type GroupSettings = {
+  tenant_id: string;
+  group_jid: string;
+  name: string;
+  welcome_enabled: number;
+  welcome_message: string;
+  antispam_enabled: number;
+};
+
+const getGroupSettings = db.prepare(
+  `SELECT * FROM whatsapp_groups WHERE tenant_id = ? AND group_jid = ?`
+);
+const upsertGroup = db.prepare(
+  `INSERT INTO whatsapp_groups (tenant_id, group_jid, name) VALUES (?, ?, ?)
+   ON CONFLICT(tenant_id, group_jid) DO UPDATE SET name = excluded.name`
+);
+
+export function listWhatsAppGroups(tenantId: string): GroupSettings[] {
+  return db
+    .prepare(`SELECT * FROM whatsapp_groups WHERE tenant_id = ? ORDER BY name ASC`)
+    .all(tenantId) as GroupSettings[];
+}
+
+export function updateWhatsAppGroupSettings(
+  tenantId: string,
+  groupJid: string,
+  settings: { welcomeEnabled?: boolean; welcomeMessage?: string; antispamEnabled?: boolean }
+): void {
+  const current = getGroupSettings.get(tenantId, groupJid) as GroupSettings | undefined;
+  if (!current) return;
+
+  db.prepare(
+    `UPDATE whatsapp_groups SET welcome_enabled = ?, welcome_message = ?, antispam_enabled = ? WHERE tenant_id = ? AND group_jid = ?`
+  ).run(
+    settings.welcomeEnabled === undefined ? current.welcome_enabled : settings.welcomeEnabled ? 1 : 0,
+    settings.welcomeMessage ?? current.welcome_message,
+    settings.antispamEnabled === undefined ? current.antispam_enabled : settings.antispamEnabled ? 1 : 0,
+    tenantId,
+    groupJid
+  );
+}
+
+const SPAM_WINDOW_MS = 8_000;
+const SPAM_MESSAGE_THRESHOLD = 5;
+const SPAM_WARNING_COOLDOWN_MS = 60_000;
+
+const spamTracker = new Map<string, number[]>();
+const lastSpamWarning = new Map<string, number>();
+
+async function checkGroupSpam(sock: WASocket, groupJid: string, senderJid: string, messageId: string | null | undefined): Promise<void> {
+  const trackerKey = `${groupJid}:${senderJid}`;
+  const now = Date.now();
+  const timestamps = (spamTracker.get(trackerKey) ?? []).filter((t) => now - t < SPAM_WINDOW_MS);
+  timestamps.push(now);
+  spamTracker.set(trackerKey, timestamps);
+
+  if (timestamps.length < SPAM_MESSAGE_THRESHOLD) return;
+
+  if (messageId) {
+    await sock
+      .sendMessage(groupJid, { delete: { remoteJid: groupJid, fromMe: false, id: messageId, participant: senderJid } })
+      .catch(() => {});
+  }
+
+  const lastWarn = lastSpamWarning.get(trackerKey) ?? 0;
+  if (now - lastWarn > SPAM_WARNING_COOLDOWN_MS) {
+    lastSpamWarning.set(trackerKey, now);
+    await sock
+      .sendMessage(groupJid, { text: `⚠️ @${senderJid.split("@")[0]} merci de ne pas envoyer de messages trop rapidement.`, mentions: [senderJid] })
+      .catch(() => {});
+  }
+}
+
 async function handleIncomingWhatsAppMessage(tenantId: string, sock: WASocket, jid: string, text: string): Promise<void> {
   const { respond, getOrCreateAgentConversation, observeConversation } = await import("../agent/reasoningEngine.js");
 
@@ -130,14 +203,43 @@ async function connect(tenantId: string, opts?: { isRetry?: boolean }): Promise<
 
     for (const msg of messages) {
       const jid = msg.key.remoteJid;
-      if (!jid || msg.key.fromMe || jid.endsWith("@g.us") || jid === "status@broadcast") continue;
+      if (!jid || msg.key.fromMe || jid === "status@broadcast") continue;
 
       const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || "";
+
+      if (jid.endsWith("@g.us")) {
+        const senderJid = msg.key.participant;
+        if (!senderJid || !text.trim()) continue;
+        const settings = getGroupSettings.get(tenantId, jid) as GroupSettings | undefined;
+        if (settings?.antispam_enabled === 1) {
+          checkGroupSpam(sock, jid, senderJid, msg.key.id).catch(() => {});
+        }
+        continue;
+      }
+
       if (!text.trim()) continue;
 
       handleIncomingWhatsAppMessage(tenantId, sock, jid, text.trim()).catch((error) => {
         console.error("Erreur lors du traitement d'un message WhatsApp entrant :", error);
       });
+    }
+  });
+
+  sock.ev.on("groups.upsert", (groups) => {
+    for (const group of groups) {
+      upsertGroup.run(tenantId, group.id, group.subject ?? "");
+    }
+  });
+
+  sock.ev.on("group-participants.update", async ({ id: groupJid, participants, action }) => {
+    if (action !== "add") return;
+    const settings = getGroupSettings.get(tenantId, groupJid) as GroupSettings | undefined;
+    if (!settings?.welcome_enabled) return;
+
+    for (const participant of participants) {
+      const name = participant.id.split("@")[0];
+      const text = settings.welcome_message.replace(/\{nom\}/g, name);
+      await sock.sendMessage(groupJid, { text, mentions: [participant.id] }).catch(() => {});
     }
   });
 

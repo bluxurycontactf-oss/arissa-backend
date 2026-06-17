@@ -119,6 +119,17 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (tenant_id, jid)
   );
+
+  CREATE TABLE IF NOT EXISTS whatsapp_groups (
+    tenant_id TEXT NOT NULL,
+    group_jid TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    welcome_enabled INTEGER NOT NULL DEFAULT 0,
+    welcome_message TEXT NOT NULL DEFAULT 'Bienvenue {nom} dans le groupe !',
+    antispam_enabled INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (tenant_id, group_jid)
+  );
 `);
 
 try { db.exec(`ALTER TABLE scheduled_tasks ADD COLUMN run_count INTEGER NOT NULL DEFAULT 0`); } catch {}
