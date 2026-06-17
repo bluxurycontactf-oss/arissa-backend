@@ -13,7 +13,8 @@ mkdirSync(sessionsDir, { recursive: true });
 type Session = {
   sock: WASocket | null;
   qr: string | null;
-  status: "disconnected" | "connecting" | "qr" | "connected";
+  pairingCode: string | null;
+  status: "disconnected" | "connecting" | "qr" | "pairing" | "connected";
   connecting: Promise<void> | null;
 };
 
@@ -22,7 +23,7 @@ const sessions = new Map<string, Session>();
 function getSession(tenantId: string): Session {
   let session = sessions.get(tenantId);
   if (!session) {
-    session = { sock: null, qr: null, status: "disconnected", connecting: null };
+    session = { sock: null, qr: null, pairingCode: null, status: "disconnected", connecting: null };
     sessions.set(tenantId, session);
   }
   return session;
@@ -41,7 +42,7 @@ async function connect(tenantId: string): Promise<void> {
   sock.ev.on("connection.update", async (update) => {
     const { connection, qr, lastDisconnect } = update;
 
-    if (qr) {
+    if (qr && !session.pairingCode) {
       session.qr = await QRCode.toDataURL(qr);
       session.status = "qr";
     }
@@ -49,11 +50,13 @@ async function connect(tenantId: string): Promise<void> {
     if (connection === "open") {
       session.status = "connected";
       session.qr = null;
+      session.pairingCode = null;
     }
 
     if (connection === "close") {
       session.status = "disconnected";
       session.sock = null;
+      session.pairingCode = null;
       const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
       if (statusCode !== DisconnectReason.loggedOut) {
         connect(tenantId).catch(() => {});
@@ -62,14 +65,34 @@ async function connect(tenantId: string): Promise<void> {
   });
 }
 
-export async function getWhatsAppStatus(tenantId: string): Promise<{ status: Session["status"]; qr: string | null }> {
+export async function getWhatsAppStatus(
+  tenantId: string
+): Promise<{ status: Session["status"]; qr: string | null; pairingCode: string | null }> {
   const session = getSession(tenantId);
   if (session.status === "disconnected" && !session.connecting) {
     session.connecting = connect(tenantId).finally(() => {
       session.connecting = null;
     });
   }
-  return { status: session.status, qr: session.qr };
+  return { status: session.status, qr: session.qr, pairingCode: session.pairingCode };
+}
+
+export async function requestPairingCode(tenantId: string, phoneNumber: string): Promise<string> {
+  const session = getSession(tenantId);
+
+  if (!session.sock) {
+    await connect(tenantId);
+  }
+
+  const sock = session.sock;
+  if (!sock) throw new Error("Connexion WhatsApp non disponible, réessayez.");
+
+  const digits = phoneNumber.replace(/\D/g, "");
+  const code = await sock.requestPairingCode(digits);
+  session.pairingCode = code;
+  session.qr = null;
+  session.status = "pairing";
+  return code;
 }
 
 export async function disconnectWhatsApp(tenantId: string): Promise<void> {
@@ -78,6 +101,7 @@ export async function disconnectWhatsApp(tenantId: string): Promise<void> {
   session.sock = null;
   session.status = "disconnected";
   session.qr = null;
+  session.pairingCode = null;
 }
 
 export async function sendWhatsAppMessage(
