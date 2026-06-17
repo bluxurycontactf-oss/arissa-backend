@@ -115,9 +115,11 @@ db.exec(`
     tenant_id TEXT NOT NULL,
     jid TEXT NOT NULL,
     conversation_id TEXT NOT NULL,
+    auto_reply INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (tenant_id, jid)
   );
 `);
 
 try { db.exec(`ALTER TABLE scheduled_tasks ADD COLUMN run_count INTEGER NOT NULL DEFAULT 0`); } catch {}
+try { db.exec(`ALTER TABLE whatsapp_conversations ADD COLUMN auto_reply INTEGER NOT NULL DEFAULT 1`); } catch {}

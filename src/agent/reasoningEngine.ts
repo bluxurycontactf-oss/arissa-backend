@@ -5,7 +5,7 @@ import type { ChatMessage, ContentBlock, ToolUseBlock } from "../llm/types.js";
 import { getProfile, retrieveMemories } from "../memory/memoryStore.js";
 import { embed } from "../rag/embeddings.js";
 import { retrieveChunks } from "../rag/retriever.js";
-import { buildSystemPrompt } from "./prompts.js";
+import { buildObserverSystemPrompt, buildSystemPrompt } from "./prompts.js";
 import { executeTool, TOOLS } from "./tools.js";
 
 const MAX_TOOL_ITERATIONS = 5;
@@ -101,4 +101,32 @@ export async function respond(message: string, conversationId: string, tenantId 
   touchConversation.run(conversationId);
 
   return finalReply;
+}
+
+export async function observeConversation(
+  message: string,
+  conversationId: string,
+  tenantId: string,
+  contactLabel: string
+): Promise<string | null> {
+  insertMessage.run(conversationId, "user", message, null);
+  touchConversation.run(conversationId);
+
+  const queryEmbedding = await embed(message);
+  const memories = retrieveMemories(tenantId, queryEmbedding);
+  const profile = getProfile(tenantId);
+
+  const system = buildObserverSystemPrompt({ profile, memories, contactLabel });
+
+  const historyRows = db
+    .prepare(`SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT ?`)
+    .all(conversationId, HISTORY_LIMIT) as { role: "user" | "assistant"; content: string }[];
+
+  const messages: ChatMessage[] = historyRows.reverse().map((row) => ({ role: row.role, content: row.content }));
+
+  const result = await llm.chat({ system, messages, tools: [] });
+  const text = extractText(result.content).trim();
+
+  if (!text || text.toUpperCase().startsWith("RIEN")) return null;
+  return text;
 }

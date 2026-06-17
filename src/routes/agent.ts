@@ -11,7 +11,14 @@ import {
 } from "../memory/memoryStore.js";
 import { getAgentConversationHistory, getOrCreateAgentConversation, respond } from "../agent/reasoningEngine.js";
 import { computeNextRun, runTask, type Frequency, type ScheduledTask } from "../agent/scheduler.js";
-import { disconnectWhatsApp, getWhatsAppStatus, reconnectWhatsApp, requestPairingCode } from "../integrations/whatsapp.js";
+import {
+  disconnectWhatsApp,
+  getWhatsAppStatus,
+  listWhatsAppContacts,
+  reconnectWhatsApp,
+  requestPairingCode,
+  setWhatsAppContactAutoReply,
+} from "../integrations/whatsapp.js";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -194,6 +201,17 @@ agentRouter.post("/whatsapp/pairing-code", async (req, res) => {
 
 agentRouter.post("/whatsapp/reconnect", async (req, res) => {
   await reconnectWhatsApp(req.tenantId!);
+  res.json({ ok: true });
+});
+
+agentRouter.get("/whatsapp/contacts", (req, res) => {
+  res.json({ contacts: listWhatsAppContacts(req.tenantId!) });
+});
+
+agentRouter.patch("/whatsapp/contacts/:jid", (req, res) => {
+  const { autoReply } = req.body as { autoReply?: boolean };
+  if (typeof autoReply !== "boolean") return res.status(400).json({ error: "autoReply (boolean) est requis." });
+  setWhatsAppContactAutoReply(req.tenantId!, req.params.jid, autoReply);
   res.json({ ok: true });
 });
 

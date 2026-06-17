@@ -1,7 +1,7 @@
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { mkdirSync } from "fs";
-import makeWASocket, { useMultiFileAuthState, DisconnectReason } from "@whiskeysockets/baileys";
+import makeWASocket, { useMultiFileAuthState, DisconnectReason, jidNormalizedUser } from "@whiskeysockets/baileys";
 import type { WASocket } from "@whiskeysockets/baileys";
 import QRCode from "qrcode";
 import { Boom } from "@hapi/boom";
@@ -48,22 +48,53 @@ function startExpiryTimer(tenantId: string, session: Session) {
 }
 
 const getWaConversation = db.prepare(
-  `SELECT conversation_id FROM whatsapp_conversations WHERE tenant_id = ? AND jid = ?`
+  `SELECT conversation_id, auto_reply FROM whatsapp_conversations WHERE tenant_id = ? AND jid = ?`
 );
 const insertWaConversation = db.prepare(
-  `INSERT INTO whatsapp_conversations (tenant_id, jid, conversation_id) VALUES (?, ?, ?)`
+  `INSERT INTO whatsapp_conversations (tenant_id, jid, conversation_id, auto_reply) VALUES (?, ?, ?, ?)`
 );
 
-async function handleIncomingWhatsAppMessage(tenantId: string, sock: WASocket, jid: string, text: string): Promise<void> {
-  const { respond, getOrCreateAgentConversation } = await import("../agent/reasoningEngine.js");
+export function listWhatsAppContacts(
+  tenantId: string
+): { jid: string; auto_reply: number; created_at: string }[] {
+  return db
+    .prepare(`SELECT jid, auto_reply, created_at FROM whatsapp_conversations WHERE tenant_id = ? ORDER BY created_at DESC`)
+    .all(tenantId) as { jid: string; auto_reply: number; created_at: string }[];
+}
 
-  const existing = getWaConversation.get(tenantId, jid) as { conversation_id: string } | undefined;
+export function setWhatsAppContactAutoReply(tenantId: string, jid: string, autoReply: boolean): void {
+  db.prepare(`UPDATE whatsapp_conversations SET auto_reply = ? WHERE tenant_id = ? AND jid = ?`).run(
+    autoReply ? 1 : 0,
+    tenantId,
+    jid
+  );
+}
+
+async function handleIncomingWhatsAppMessage(tenantId: string, sock: WASocket, jid: string, text: string): Promise<void> {
+  const { respond, getOrCreateAgentConversation, observeConversation } = await import("../agent/reasoningEngine.js");
+
+  const existing = getWaConversation.get(tenantId, jid) as
+    | { conversation_id: string; auto_reply: number }
+    | undefined;
   const conversationId = getOrCreateAgentConversation(existing?.conversation_id, tenantId);
-  if (!existing) insertWaConversation.run(tenantId, jid, conversationId);
+  const autoReply = existing ? existing.auto_reply === 1 : true;
+  if (!existing) insertWaConversation.run(tenantId, jid, conversationId, 1);
 
   try {
-    const reply = await respond(text, conversationId, tenantId);
-    await sock.sendMessage(jid, { text: reply });
+    if (autoReply) {
+      const reply = await respond(text, conversationId, tenantId);
+      await sock.sendMessage(jid, { text: reply });
+      return;
+    }
+
+    const contactLabel = jid.split("@")[0];
+    const note = await observeConversation(text, conversationId, tenantId, contactLabel);
+    if (note && sock.user?.id) {
+      const ownerJid = jidNormalizedUser(sock.user.id);
+      await sock.sendMessage(ownerJid, {
+        text: `🔎 À propos de votre discussion avec ${contactLabel} :\n\n${note}`,
+      });
+    }
   } catch (error) {
     console.error("Erreur lors du traitement d'un message WhatsApp entrant :", error);
   }
