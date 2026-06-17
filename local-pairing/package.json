@@ -1,0 +1,13 @@
+{
+  "name": "arissa-whatsapp-pairing",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "pair": "node pair.mjs"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^7.0.0-rc13",
+    "qrcode-terminal": "^0.12.0"
+  }
+}

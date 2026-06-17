@@ -3,3 +3,5 @@ dist/
 data/
 .env
 *-firebase-adminsdk-*.json
+local-pairing/node_modules/
+local-pairing/session.json

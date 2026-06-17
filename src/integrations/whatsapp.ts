@@ -1,21 +1,20 @@
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import { mkdirSync } from "fs";
-import makeWASocket, {
-  useMultiFileAuthState,
-  DisconnectReason,
-  jidNormalizedUser,
-  downloadMediaMessage,
-  proto,
-} from "@whiskeysockets/baileys";
+import { mkdirSync, rmSync, writeFileSync } from "fs";
+import makeWASocket, { DisconnectReason, jidNormalizedUser, downloadMediaMessage, proto, BufferJSON } from "@whiskeysockets/baileys";
 import type { WASocket, WAMessage } from "@whiskeysockets/baileys";
 import QRCode from "qrcode";
 import { Boom } from "@hapi/boom";
 import { db } from "../db/index.js";
+import { useSingleFileAuthState, decodeSessionString } from "./whatsappAuthState.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const sessionsDir = join(__dirname, "../../data/whatsapp_sessions");
 mkdirSync(sessionsDir, { recursive: true });
+
+function sessionFilePath(tenantId: string): string {
+  return join(sessionsDir, `${tenantId}.json`);
+}
 
 const SESSION_EXPIRY_MS = 5 * 60 * 1000;
 
@@ -370,7 +369,7 @@ async function connect(tenantId: string, opts?: { isRetry?: boolean }): Promise<
     startExpiryTimer(tenantId, session);
   }
 
-  const { state, saveCreds } = await useMultiFileAuthState(join(sessionsDir, tenantId));
+  const { state, saveCreds } = useSingleFileAuthState(sessionFilePath(tenantId));
   const initialSettings = getWhatsAppSettings(tenantId);
   const sock = makeWASocket({ auth: state, markOnlineOnConnect: initialSettings.appear_online === 1 });
   session.sock = sock;
@@ -529,6 +528,30 @@ export async function disconnectWhatsApp(tenantId: string): Promise<void> {
   session.status = "disconnected";
   session.qr = null;
   session.pairingCode = null;
+  rmSync(sessionFilePath(tenantId), { force: true });
+}
+
+export async function importWhatsAppSession(tenantId: string, sessionString: string): Promise<void> {
+  let decoded;
+  try {
+    decoded = decodeSessionString(sessionString);
+  } catch {
+    throw new Error("Chaîne de session invalide ou corrompue.");
+  }
+  if (!decoded.creds?.noiseKey) throw new Error("Chaîne de session invalide : données d'identification manquantes.");
+
+  const session = getSession(tenantId);
+  clearExpiryTimer(session);
+  session.sock?.end(undefined);
+  session.sock = null;
+  session.qr = null;
+  session.pairingCode = null;
+  session.status = "disconnected";
+
+  mkdirSync(sessionsDir, { recursive: true });
+  writeFileSync(sessionFilePath(tenantId), JSON.stringify(decoded, BufferJSON.replacer, 2));
+
+  await connect(tenantId);
 }
 
 export async function sendWhatsAppMessage(

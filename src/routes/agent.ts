@@ -15,6 +15,7 @@ import {
   disconnectWhatsApp,
   getWhatsAppSettings,
   getWhatsAppStatus,
+  importWhatsAppSession,
   listWhatsAppContacts,
   listWhatsAppGroups,
   reconnectWhatsApp,
@@ -200,6 +201,17 @@ agentRouter.post("/whatsapp/pairing-code", async (req, res) => {
     res.json({ code });
   } catch (error) {
     res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+agentRouter.post("/whatsapp/import-session", async (req, res) => {
+  const { sessionString } = req.body as { sessionString?: string };
+  if (!sessionString) return res.status(400).json({ error: "sessionString est requis." });
+  try {
+    await importWhatsAppSession(req.tenantId!, sessionString);
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(400).json({ error: (error as Error).message });
   }
 });
 
