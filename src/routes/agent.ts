@@ -13,6 +13,7 @@ import { getAgentConversationHistory, getOrCreateAgentConversation, respond } fr
 import { computeNextRun, runTask, type Frequency, type ScheduledTask } from "../agent/scheduler.js";
 import {
   disconnectWhatsApp,
+  getWhatsAppSettings,
   getWhatsAppStatus,
   listWhatsAppContacts,
   listWhatsAppGroups,
@@ -20,6 +21,7 @@ import {
   requestPairingCode,
   setWhatsAppContactAutoReply,
   updateWhatsAppGroupSettings,
+  updateWhatsAppSettings,
 } from "../integrations/whatsapp.js";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -215,6 +217,21 @@ agentRouter.patch("/whatsapp/contacts/:jid", (req, res) => {
   if (typeof autoReply !== "boolean") return res.status(400).json({ error: "autoReply (boolean) est requis." });
   setWhatsAppContactAutoReply(req.tenantId!, req.params.jid, autoReply);
   res.json({ ok: true });
+});
+
+agentRouter.get("/whatsapp/settings", (req, res) => {
+  res.json({ settings: getWhatsAppSettings(req.tenantId!) });
+});
+
+agentRouter.patch("/whatsapp/settings", (req, res) => {
+  const { unlockViewonce, antiDelete, statusForward, appearOnline } = req.body as {
+    unlockViewonce?: boolean;
+    antiDelete?: boolean;
+    statusForward?: boolean;
+    appearOnline?: boolean;
+  };
+  const settings = updateWhatsAppSettings(req.tenantId!, { unlockViewonce, antiDelete, statusForward, appearOnline });
+  res.json({ settings });
 });
 
 agentRouter.get("/whatsapp/groups", (req, res) => {

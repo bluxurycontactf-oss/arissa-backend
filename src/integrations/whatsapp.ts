@@ -1,8 +1,14 @@
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { mkdirSync } from "fs";
-import makeWASocket, { useMultiFileAuthState, DisconnectReason, jidNormalizedUser } from "@whiskeysockets/baileys";
-import type { WASocket } from "@whiskeysockets/baileys";
+import makeWASocket, {
+  useMultiFileAuthState,
+  DisconnectReason,
+  jidNormalizedUser,
+  downloadMediaMessage,
+  proto,
+} from "@whiskeysockets/baileys";
+import type { WASocket, WAMessage } from "@whiskeysockets/baileys";
 import QRCode from "qrcode";
 import { Boom } from "@hapi/boom";
 import { db } from "../db/index.js";
@@ -68,6 +74,128 @@ export function setWhatsAppContactAutoReply(tenantId: string, jid: string, autoR
     tenantId,
     jid
   );
+}
+
+type WhatsAppSettings = {
+  tenant_id: string;
+  unlock_viewonce: number;
+  anti_delete: number;
+  status_forward: number;
+  appear_online: number;
+};
+
+const DEFAULT_SETTINGS: Omit<WhatsAppSettings, "tenant_id"> = {
+  unlock_viewonce: 1,
+  anti_delete: 1,
+  status_forward: 0,
+  appear_online: 0,
+};
+
+export function getWhatsAppSettings(tenantId: string): WhatsAppSettings {
+  const existing = db.prepare(`SELECT * FROM whatsapp_settings WHERE tenant_id = ?`).get(tenantId) as
+    | WhatsAppSettings
+    | undefined;
+  if (existing) return existing;
+
+  db.prepare(
+    `INSERT INTO whatsapp_settings (tenant_id, unlock_viewonce, anti_delete, status_forward, appear_online) VALUES (?, ?, ?, ?, ?)`
+  ).run(tenantId, DEFAULT_SETTINGS.unlock_viewonce, DEFAULT_SETTINGS.anti_delete, DEFAULT_SETTINGS.status_forward, DEFAULT_SETTINGS.appear_online);
+
+  return { tenant_id: tenantId, ...DEFAULT_SETTINGS };
+}
+
+export function updateWhatsAppSettings(
+  tenantId: string,
+  patch: { unlockViewonce?: boolean; antiDelete?: boolean; statusForward?: boolean; appearOnline?: boolean }
+): WhatsAppSettings {
+  const current = getWhatsAppSettings(tenantId);
+
+  const next: WhatsAppSettings = {
+    tenant_id: tenantId,
+    unlock_viewonce: patch.unlockViewonce === undefined ? current.unlock_viewonce : patch.unlockViewonce ? 1 : 0,
+    anti_delete: patch.antiDelete === undefined ? current.anti_delete : patch.antiDelete ? 1 : 0,
+    status_forward: patch.statusForward === undefined ? current.status_forward : patch.statusForward ? 1 : 0,
+    appear_online: patch.appearOnline === undefined ? current.appear_online : patch.appearOnline ? 1 : 0,
+  };
+
+  db.prepare(
+    `UPDATE whatsapp_settings SET unlock_viewonce = ?, anti_delete = ?, status_forward = ?, appear_online = ? WHERE tenant_id = ?`
+  ).run(next.unlock_viewonce, next.anti_delete, next.status_forward, next.appear_online, tenantId);
+
+  const session = sessions.get(tenantId);
+  if (session?.sock?.user?.id) {
+    session.sock.sendPresenceUpdate(next.appear_online ? "available" : "unavailable").catch(() => {});
+  }
+
+  return next;
+}
+
+type CachedMessage = {
+  jid: string;
+  senderLabel: string;
+  text?: string;
+  mediaBuffer?: Buffer;
+  mediaType?: "image" | "video" | "audio" | "sticker";
+  caption?: string;
+  cachedAt: number;
+};
+
+const ANTI_DELETE_TTL_MS = 30 * 60 * 1000;
+const ANTI_DELETE_MAX_ENTRIES = 500;
+const messageCache = new Map<string, CachedMessage>();
+
+function pruneMessageCache() {
+  const now = Date.now();
+  for (const [id, cached] of messageCache) {
+    if (now - cached.cachedAt > ANTI_DELETE_TTL_MS) messageCache.delete(id);
+  }
+  while (messageCache.size > ANTI_DELETE_MAX_ENTRIES) {
+    const oldestKey = messageCache.keys().next().value;
+    if (!oldestKey) break;
+    messageCache.delete(oldestKey);
+  }
+}
+
+function extractMediaInfo(message: proto.IMessage | null | undefined): { type: CachedMessage["mediaType"]; caption?: string } | null {
+  if (!message) return null;
+  if (message.imageMessage) return { type: "image", caption: message.imageMessage.caption ?? undefined };
+  if (message.videoMessage) return { type: "video", caption: message.videoMessage.caption ?? undefined };
+  if (message.audioMessage) return { type: "audio" };
+  if (message.stickerMessage) return { type: "sticker" };
+  return null;
+}
+
+function unwrapViewOnce(message: proto.IMessage | null | undefined): proto.IMessage | null {
+  return message?.viewOnceMessage?.message || message?.viewOnceMessageV2?.message || message?.viewOnceMessageV2Extension?.message || null;
+}
+
+async function cacheIncomingMessage(msg: WAMessage, jid: string, senderLabel: string): Promise<void> {
+  const content = unwrapViewOnce(msg.message) || msg.message;
+  if (!msg.key.id || !content) return;
+
+  const mediaInfo = extractMediaInfo(content);
+  const text = content.conversation || content.extendedTextMessage?.text || "";
+
+  const cached: CachedMessage = { jid, senderLabel, cachedAt: Date.now() };
+
+  if (mediaInfo) {
+    cached.mediaType = mediaInfo.type;
+    cached.caption = mediaInfo.caption;
+    if (mediaInfo.type === "image" || mediaInfo.type === "video") {
+      try {
+        cached.mediaBuffer = await downloadMediaMessage({ ...msg, message: content }, "buffer", {});
+      } catch {
+        // media unavailable, skip caching the buffer
+      }
+    }
+  } else if (text.trim()) {
+    cached.text = text.trim();
+  } else {
+    return;
+  }
+
+  messageCache.set(msg.key.id, cached);
+  pruneMessageCache();
 }
 
 type GroupSettings = {
@@ -143,6 +271,79 @@ async function checkGroupSpam(sock: WASocket, groupJid: string, senderJid: strin
   }
 }
 
+async function unlockViewOnce(sock: WASocket, msg: WAMessage, senderLabel: string): Promise<void> {
+  const inner = unwrapViewOnce(msg.message);
+  if (!inner) return;
+
+  const mediaInfo = extractMediaInfo(inner);
+  if (!mediaInfo || (mediaInfo.type !== "image" && mediaInfo.type !== "video")) return;
+
+  const ownerJid = sock.user?.id ? jidNormalizedUser(sock.user.id) : null;
+  if (!ownerJid) return;
+
+  try {
+    const buffer = await downloadMediaMessage({ ...msg, message: inner }, "buffer", {});
+    const caption = `🔓 Vue unique de ${senderLabel}${mediaInfo.caption ? ` :\n${mediaInfo.caption}` : ""}`;
+    if (mediaInfo.type === "video") {
+      await sock.sendMessage(ownerJid, { video: buffer, caption });
+    } else {
+      await sock.sendMessage(ownerJid, { image: buffer, caption });
+    }
+  } catch (error) {
+    console.error("Erreur lors du déblocage d'une vue unique WhatsApp :", error);
+  }
+}
+
+async function handleDeletedMessage(sock: WASocket, messageId: string): Promise<void> {
+  const cached = messageCache.get(messageId);
+  if (!cached) return;
+
+  const ownerJid = sock.user?.id ? jidNormalizedUser(sock.user.id) : null;
+  if (!ownerJid) return;
+
+  const header = `🗑️ Message supprimé par ${cached.senderLabel} :`;
+
+  try {
+    if (cached.mediaBuffer && cached.mediaType === "image") {
+      await sock.sendMessage(ownerJid, { image: cached.mediaBuffer, caption: `${header}${cached.caption ? `\n${cached.caption}` : ""}` });
+    } else if (cached.mediaBuffer && cached.mediaType === "video") {
+      await sock.sendMessage(ownerJid, { video: cached.mediaBuffer, caption: `${header}${cached.caption ? `\n${cached.caption}` : ""}` });
+    } else if (cached.mediaType) {
+      await sock.sendMessage(ownerJid, { text: `${header} (média de type ${cached.mediaType}, non récupérable)` });
+    } else if (cached.text) {
+      await sock.sendMessage(ownerJid, { text: `${header}\n\n${cached.text}` });
+    }
+  } catch (error) {
+    console.error("Erreur lors de l'envoi d'un message anti-suppression WhatsApp :", error);
+  }
+}
+
+async function handleIncomingStatus(sock: WASocket, msg: WAMessage, settings: WhatsAppSettings): Promise<void> {
+  await sock.readMessages([msg.key]).catch(() => {});
+
+  if (settings.status_forward !== 1) return;
+
+  const senderJid = msg.key.participant;
+  const ownerJid = sock.user?.id ? jidNormalizedUser(sock.user.id) : null;
+  if (!senderJid || !ownerJid) return;
+
+  const senderLabel = senderJid.split("@")[0];
+  const mediaInfo = extractMediaInfo(msg.message);
+  const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || "";
+
+  try {
+    if (mediaInfo?.type === "image" || mediaInfo?.type === "video") {
+      const buffer = await downloadMediaMessage(msg, "buffer", {});
+      const caption = `📣 Statut de ${senderLabel}${mediaInfo.caption ? ` :\n${mediaInfo.caption}` : ""}`;
+      await sock.sendMessage(ownerJid, mediaInfo.type === "video" ? { video: buffer, caption } : { image: buffer, caption });
+    } else if (text.trim()) {
+      await sock.sendMessage(ownerJid, { text: `📣 Statut de ${senderLabel} :\n\n${text.trim()}` });
+    }
+  } catch (error) {
+    console.error("Erreur lors de la transmission d'un statut WhatsApp :", error);
+  }
+}
+
 async function handleIncomingWhatsAppMessage(tenantId: string, sock: WASocket, jid: string, text: string): Promise<void> {
   const { respond, getOrCreateAgentConversation, observeConversation } = await import("../agent/reasoningEngine.js");
 
@@ -193,25 +394,52 @@ async function connect(tenantId: string, opts?: { isRetry?: boolean }): Promise<
   }
 
   const { state, saveCreds } = await useMultiFileAuthState(join(sessionsDir, tenantId));
-  const sock = makeWASocket({ auth: state });
+  const initialSettings = getWhatsAppSettings(tenantId);
+  const sock = makeWASocket({ auth: state, markOnlineOnConnect: initialSettings.appear_online === 1 });
   session.sock = sock;
 
   sock.ev.on("creds.update", saveCreds);
 
   sock.ev.on("messages.upsert", ({ messages, type }) => {
     if (type !== "notify") return;
+    const settings = getWhatsAppSettings(tenantId);
 
     for (const msg of messages) {
       const jid = msg.key.remoteJid;
-      if (!jid || msg.key.fromMe || jid === "status@broadcast") continue;
+      if (!jid) continue;
+
+      if (jid === "status@broadcast") {
+        if (!msg.key.fromMe) handleIncomingStatus(sock, msg, settings).catch(() => {});
+        continue;
+      }
+
+      if (msg.key.fromMe) continue;
+
+      const senderJid = jid.endsWith("@g.us") ? msg.key.participant ?? undefined : jid;
+      const senderLabel = (senderJid ?? jid).split("@")[0];
+
+      const revokeKey = msg.message?.protocolMessage?.type === proto.Message.ProtocolMessage.Type.REVOKE
+        ? msg.message.protocolMessage.key?.id
+        : null;
+
+      if (revokeKey) {
+        if (settings.anti_delete === 1) handleDeletedMessage(sock, revokeKey).catch(() => {});
+        continue;
+      }
+
+      if (settings.unlock_viewonce === 1) {
+        unlockViewOnce(sock, msg, senderLabel).catch(() => {});
+      }
+      if (settings.anti_delete === 1 && senderJid) {
+        cacheIncomingMessage(msg, jid, senderLabel).catch(() => {});
+      }
 
       const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || "";
 
       if (jid.endsWith("@g.us")) {
-        const senderJid = msg.key.participant;
         if (!senderJid || !text.trim()) continue;
-        const settings = getGroupSettings.get(tenantId, jid) as GroupSettings | undefined;
-        if (settings?.antispam_enabled === 1) {
+        const groupSettings = getGroupSettings.get(tenantId, jid) as GroupSettings | undefined;
+        if (groupSettings?.antispam_enabled === 1) {
           checkGroupSpam(sock, jid, senderJid, msg.key.id).catch(() => {});
         }
         continue;

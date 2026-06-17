@@ -120,6 +120,14 @@ db.exec(`
     PRIMARY KEY (tenant_id, jid)
   );
 
+  CREATE TABLE IF NOT EXISTS whatsapp_settings (
+    tenant_id TEXT PRIMARY KEY,
+    unlock_viewonce INTEGER NOT NULL DEFAULT 1,
+    anti_delete INTEGER NOT NULL DEFAULT 1,
+    status_forward INTEGER NOT NULL DEFAULT 0,
+    appear_online INTEGER NOT NULL DEFAULT 0
+  );
+
   CREATE TABLE IF NOT EXISTS whatsapp_groups (
     tenant_id TEXT NOT NULL,
     group_jid TEXT NOT NULL,
