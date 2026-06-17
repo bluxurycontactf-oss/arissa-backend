@@ -124,7 +124,8 @@ db.exec(`
     tenant_id TEXT PRIMARY KEY,
     unlock_viewonce INTEGER NOT NULL DEFAULT 1,
     anti_delete INTEGER NOT NULL DEFAULT 1,
-    appear_online INTEGER NOT NULL DEFAULT 0
+    appear_online INTEGER NOT NULL DEFAULT 0,
+    proxy_url TEXT NOT NULL DEFAULT ''
   );
 
   CREATE TABLE IF NOT EXISTS whatsapp_groups (
@@ -141,3 +142,4 @@ db.exec(`
 
 try { db.exec(`ALTER TABLE scheduled_tasks ADD COLUMN run_count INTEGER NOT NULL DEFAULT 0`); } catch {}
 try { db.exec(`ALTER TABLE whatsapp_conversations ADD COLUMN auto_reply INTEGER NOT NULL DEFAULT 1`); } catch {}
+try { db.exec(`ALTER TABLE whatsapp_settings ADD COLUMN proxy_url TEXT NOT NULL DEFAULT ''`); } catch {}

@@ -7,6 +7,19 @@ import QRCode from "qrcode";
 import { Boom } from "@hapi/boom";
 import { db } from "../db/index.js";
 import { useSingleFileAuthState, decodeSessionString } from "./whatsappAuthState.js";
+import { HttpsProxyAgent } from "https-proxy-agent";
+import { SocksProxyAgent } from "socks-proxy-agent";
+
+function buildProxyAgent(proxyUrl: string) {
+  if (!proxyUrl) return undefined;
+  try {
+    if (proxyUrl.startsWith("socks")) return new SocksProxyAgent(proxyUrl);
+    return new HttpsProxyAgent(proxyUrl);
+  } catch (error) {
+    console.error("URL de proxy WhatsApp invalide :", error);
+    return undefined;
+  }
+}
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const sessionsDir = join(__dirname, "../../data/whatsapp_sessions");
@@ -80,30 +93,32 @@ type WhatsAppSettings = {
   unlock_viewonce: number;
   anti_delete: number;
   appear_online: number;
+  proxy_url: string;
 };
 
 const DEFAULT_SETTINGS: Omit<WhatsAppSettings, "tenant_id"> = {
   unlock_viewonce: 1,
   anti_delete: 1,
   appear_online: 0,
+  proxy_url: "",
 };
 
 export function getWhatsAppSettings(tenantId: string): WhatsAppSettings {
-  const existing = db.prepare(`SELECT tenant_id, unlock_viewonce, anti_delete, appear_online FROM whatsapp_settings WHERE tenant_id = ?`).get(tenantId) as
+  const existing = db.prepare(`SELECT tenant_id, unlock_viewonce, anti_delete, appear_online, proxy_url FROM whatsapp_settings WHERE tenant_id = ?`).get(tenantId) as
     | WhatsAppSettings
     | undefined;
   if (existing) return existing;
 
   db.prepare(
-    `INSERT INTO whatsapp_settings (tenant_id, unlock_viewonce, anti_delete, appear_online) VALUES (?, ?, ?, ?)`
-  ).run(tenantId, DEFAULT_SETTINGS.unlock_viewonce, DEFAULT_SETTINGS.anti_delete, DEFAULT_SETTINGS.appear_online);
+    `INSERT INTO whatsapp_settings (tenant_id, unlock_viewonce, anti_delete, appear_online, proxy_url) VALUES (?, ?, ?, ?, ?)`
+  ).run(tenantId, DEFAULT_SETTINGS.unlock_viewonce, DEFAULT_SETTINGS.anti_delete, DEFAULT_SETTINGS.appear_online, DEFAULT_SETTINGS.proxy_url);
 
   return { tenant_id: tenantId, ...DEFAULT_SETTINGS };
 }
 
 export function updateWhatsAppSettings(
   tenantId: string,
-  patch: { unlockViewonce?: boolean; antiDelete?: boolean; appearOnline?: boolean }
+  patch: { unlockViewonce?: boolean; antiDelete?: boolean; appearOnline?: boolean; proxyUrl?: string }
 ): WhatsAppSettings {
   const current = getWhatsAppSettings(tenantId);
 
@@ -112,11 +127,12 @@ export function updateWhatsAppSettings(
     unlock_viewonce: patch.unlockViewonce === undefined ? current.unlock_viewonce : patch.unlockViewonce ? 1 : 0,
     anti_delete: patch.antiDelete === undefined ? current.anti_delete : patch.antiDelete ? 1 : 0,
     appear_online: patch.appearOnline === undefined ? current.appear_online : patch.appearOnline ? 1 : 0,
+    proxy_url: patch.proxyUrl === undefined ? current.proxy_url : patch.proxyUrl.trim(),
   };
 
   db.prepare(
-    `UPDATE whatsapp_settings SET unlock_viewonce = ?, anti_delete = ?, appear_online = ? WHERE tenant_id = ?`
-  ).run(next.unlock_viewonce, next.anti_delete, next.appear_online, tenantId);
+    `UPDATE whatsapp_settings SET unlock_viewonce = ?, anti_delete = ?, appear_online = ?, proxy_url = ? WHERE tenant_id = ?`
+  ).run(next.unlock_viewonce, next.anti_delete, next.appear_online, next.proxy_url, tenantId);
 
   const session = sessions.get(tenantId);
   if (session?.sock?.user?.id) {
@@ -371,7 +387,12 @@ async function connect(tenantId: string, opts?: { isRetry?: boolean }): Promise<
 
   const { state, saveCreds } = useSingleFileAuthState(sessionFilePath(tenantId));
   const initialSettings = getWhatsAppSettings(tenantId);
-  const sock = makeWASocket({ auth: state, markOnlineOnConnect: initialSettings.appear_online === 1 });
+  const sock = makeWASocket({
+    auth: state,
+    markOnlineOnConnect: initialSettings.appear_online === 1,
+    agent: buildProxyAgent(initialSettings.proxy_url),
+    fetchAgent: buildProxyAgent(initialSettings.proxy_url),
+  });
   session.sock = sock;
 
   sock.ev.on("creds.update", saveCreds);
