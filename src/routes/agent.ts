@@ -11,6 +11,7 @@ import {
 } from "../memory/memoryStore.js";
 import { getAgentConversationHistory, getOrCreateAgentConversation, respond } from "../agent/reasoningEngine.js";
 import { computeNextRun, runTask, type Frequency, type ScheduledTask } from "../agent/scheduler.js";
+import { disconnectWhatsApp, getWhatsAppStatus } from "../integrations/whatsapp.js";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -172,6 +173,16 @@ agentRouter.patch("/tasks/:id", (req, res) => {
 
 agentRouter.delete("/tasks/:id", (req, res) => {
   db.prepare(`DELETE FROM scheduled_tasks WHERE id = ? AND tenant_id = ?`).run(Number(req.params.id), req.tenantId!);
+  res.json({ ok: true });
+});
+
+agentRouter.get("/whatsapp/status", async (req, res) => {
+  const status = await getWhatsAppStatus(req.tenantId!);
+  res.json(status);
+});
+
+agentRouter.post("/whatsapp/disconnect", async (req, res) => {
+  await disconnectWhatsApp(req.tenantId!);
   res.json({ ok: true });
 });
 

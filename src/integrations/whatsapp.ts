@@ -1,35 +1,105 @@
-import { config } from "../config.js";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
+import { mkdirSync } from "fs";
+import makeWASocket, { useMultiFileAuthState, DisconnectReason } from "@whiskeysockets/baileys";
+import type { WASocket } from "@whiskeysockets/baileys";
+import QRCode from "qrcode";
+import { Boom } from "@hapi/boom";
 
-const GRAPH_API_VERSION = "v21.0";
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const sessionsDir = join(__dirname, "../../data/whatsapp_sessions");
+mkdirSync(sessionsDir, { recursive: true });
 
-export async function sendWhatsAppMessage({ to, message }: { to: string; message: string }): Promise<string> {
-  if (!config.whatsapp.token || !config.whatsapp.phoneNumberId) {
+type Session = {
+  sock: WASocket | null;
+  qr: string | null;
+  status: "disconnected" | "connecting" | "qr" | "connected";
+  connecting: Promise<void> | null;
+};
+
+const sessions = new Map<string, Session>();
+
+function getSession(tenantId: string): Session {
+  let session = sessions.get(tenantId);
+  if (!session) {
+    session = { sock: null, qr: null, status: "disconnected", connecting: null };
+    sessions.set(tenantId, session);
+  }
+  return session;
+}
+
+async function connect(tenantId: string): Promise<void> {
+  const session = getSession(tenantId);
+  session.status = "connecting";
+
+  const { state, saveCreds } = await useMultiFileAuthState(join(sessionsDir, tenantId));
+  const sock = makeWASocket({ auth: state });
+  session.sock = sock;
+
+  sock.ev.on("creds.update", saveCreds);
+
+  sock.ev.on("connection.update", async (update) => {
+    const { connection, qr, lastDisconnect } = update;
+
+    if (qr) {
+      session.qr = await QRCode.toDataURL(qr);
+      session.status = "qr";
+    }
+
+    if (connection === "open") {
+      session.status = "connected";
+      session.qr = null;
+    }
+
+    if (connection === "close") {
+      session.status = "disconnected";
+      session.sock = null;
+      const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
+      if (statusCode !== DisconnectReason.loggedOut) {
+        connect(tenantId).catch(() => {});
+      }
+    }
+  });
+}
+
+export async function getWhatsAppStatus(tenantId: string): Promise<{ status: Session["status"]; qr: string | null }> {
+  const session = getSession(tenantId);
+  if (session.status === "disconnected" && !session.connecting) {
+    session.connecting = connect(tenantId).finally(() => {
+      session.connecting = null;
+    });
+  }
+  return { status: session.status, qr: session.qr };
+}
+
+export async function disconnectWhatsApp(tenantId: string): Promise<void> {
+  const session = getSession(tenantId);
+  await session.sock?.logout().catch(() => {});
+  session.sock = null;
+  session.status = "disconnected";
+  session.qr = null;
+}
+
+export async function sendWhatsAppMessage(
+  tenantId: string,
+  { to, message }: { to: string; message: string }
+): Promise<string> {
+  const session = getSession(tenantId);
+
+  if (session.status !== "connected" || !session.sock) {
     return (
-      `Outil non configuré : impossible d'envoyer le message WhatsApp à ${to}. ` +
-      `Pour activer l'envoi réel : créez une app sur https://developers.facebook.com, ajoutez le produit ` +
-      `"WhatsApp", récupérez un numéro de test (ou votre numéro vérifié) et un token d'accès, puis ajoutez ` +
-      `WHATSAPP_TOKEN et WHATSAPP_PHONE_NUMBER_ID dans .env.`
+      `WhatsApp non connecté : impossible d'envoyer le message à ${to}. ` +
+      `Rendez-vous dans Paramètres pour scanner le QR code et connecter votre WhatsApp.`
     );
   }
 
-  const res = await fetch(`https://graph.facebook.com/${GRAPH_API_VERSION}/${config.whatsapp.phoneNumberId}/messages`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${config.whatsapp.token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      messaging_product: "whatsapp",
-      to,
-      type: "text",
-      text: { body: message },
-    }),
-  });
+  const digits = to.replace(/\D/g, "");
+  const jid = to.includes("@") ? to : `${digits}@s.whatsapp.net`;
 
-  if (!res.ok) {
-    const detail = await res.text();
-    return `Erreur lors de l'envoi du message WhatsApp à ${to} : ${detail}`;
+  try {
+    await session.sock.sendMessage(jid, { text: message });
+    return `Message WhatsApp envoyé à ${to}.`;
+  } catch (error) {
+    return `Erreur lors de l'envoi du message WhatsApp à ${to} : ${(error as Error).message}`;
   }
-
-  return `Message WhatsApp envoyé à ${to}.`;
 }

@@ -22,10 +22,6 @@ export const config = {
     apiKey: process.env.RESEND_API_KEY ?? "",
     fromEmail: process.env.RESEND_FROM_EMAIL ?? "",
   },
-  whatsapp: {
-    token: process.env.WHATSAPP_TOKEN ?? "",
-    phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID ?? "",
-  },
   firebase: {
     serviceAccountPath: process.env.FIREBASE_SERVICE_ACCOUNT_PATH ?? "",
     serviceAccountJson: process.env.FIREBASE_SERVICE_ACCOUNT_JSON ?? "",

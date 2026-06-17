@@ -130,11 +130,11 @@ const handlers: Record<string, ToolHandler> = {
     return sendEmail({ to, subject, body });
   },
 
-  async send_whatsapp(input) {
+  async send_whatsapp(input, ctx) {
     const to = String(input.to ?? "");
     const message = String(input.message ?? "");
     if (!to || !message) return "Erreur : to et message sont requis.";
-    return sendWhatsAppMessage({ to, message });
+    return sendWhatsAppMessage(ctx.tenantId, { to, message });
   },
 };
 
