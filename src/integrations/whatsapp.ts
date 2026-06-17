@@ -10,12 +10,15 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const sessionsDir = join(__dirname, "../../data/whatsapp_sessions");
 mkdirSync(sessionsDir, { recursive: true });
 
+const SESSION_EXPIRY_MS = 5 * 60 * 1000;
+
 type Session = {
   sock: WASocket | null;
   qr: string | null;
   pairingCode: string | null;
-  status: "disconnected" | "connecting" | "qr" | "pairing" | "connected";
+  status: "disconnected" | "connecting" | "qr" | "pairing" | "connected" | "expired";
   connecting: Promise<void> | null;
+  expiryTimer: NodeJS.Timeout | null;
 };
 
 const sessions = new Map<string, Session>();
@@ -23,15 +26,44 @@ const sessions = new Map<string, Session>();
 function getSession(tenantId: string): Session {
   let session = sessions.get(tenantId);
   if (!session) {
-    session = { sock: null, qr: null, pairingCode: null, status: "disconnected", connecting: null };
+    session = { sock: null, qr: null, pairingCode: null, status: "disconnected", connecting: null, expiryTimer: null };
     sessions.set(tenantId, session);
   }
   return session;
 }
 
-async function connect(tenantId: string): Promise<void> {
+function clearExpiryTimer(session: Session) {
+  if (session.expiryTimer) {
+    clearTimeout(session.expiryTimer);
+    session.expiryTimer = null;
+  }
+}
+
+function startExpiryTimer(tenantId: string, session: Session) {
+  clearExpiryTimer(session);
+  session.expiryTimer = setTimeout(() => {
+    expireSession(tenantId).catch(() => {});
+  }, SESSION_EXPIRY_MS);
+}
+
+async function expireSession(tenantId: string): Promise<void> {
+  const session = getSession(tenantId);
+  if (session.status === "connected") return;
+  clearExpiryTimer(session);
+  session.sock?.end(undefined);
+  session.sock = null;
+  session.qr = null;
+  session.pairingCode = null;
+  session.status = "expired";
+}
+
+async function connect(tenantId: string, opts?: { isRetry?: boolean }): Promise<void> {
   const session = getSession(tenantId);
   session.status = "connecting";
+
+  if (!opts?.isRetry) {
+    startExpiryTimer(tenantId, session);
+  }
 
   const { state, saveCreds } = await useMultiFileAuthState(join(sessionsDir, tenantId));
   const sock = makeWASocket({ auth: state });
@@ -51,15 +83,17 @@ async function connect(tenantId: string): Promise<void> {
       session.status = "connected";
       session.qr = null;
       session.pairingCode = null;
+      clearExpiryTimer(session);
     }
 
     if (connection === "close") {
-      session.status = "disconnected";
       session.sock = null;
       session.pairingCode = null;
       const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
-      if (statusCode !== DisconnectReason.loggedOut) {
-        connect(tenantId).catch(() => {});
+      if (statusCode !== DisconnectReason.loggedOut && session.expiryTimer) {
+        connect(tenantId, { isRetry: true }).catch(() => {});
+      } else if (session.status !== "expired") {
+        session.status = "disconnected";
       }
     }
   });
@@ -77,11 +111,24 @@ export async function getWhatsAppStatus(
   return { status: session.status, qr: session.qr, pairingCode: session.pairingCode };
 }
 
+export async function reconnectWhatsApp(tenantId: string): Promise<void> {
+  const session = getSession(tenantId);
+  clearExpiryTimer(session);
+  session.sock?.end(undefined);
+  session.sock = null;
+  session.qr = null;
+  session.pairingCode = null;
+  session.status = "disconnected";
+  await connect(tenantId);
+}
+
 export async function requestPairingCode(tenantId: string, phoneNumber: string): Promise<string> {
   const session = getSession(tenantId);
 
-  if (!session.sock) {
+  if (!session.sock || session.status === "expired") {
     await connect(tenantId);
+  } else {
+    startExpiryTimer(tenantId, session);
   }
 
   const sock = session.sock;
@@ -97,6 +144,7 @@ export async function requestPairingCode(tenantId: string, phoneNumber: string):
 
 export async function disconnectWhatsApp(tenantId: string): Promise<void> {
   const session = getSession(tenantId);
+  clearExpiryTimer(session);
   await session.sock?.logout().catch(() => {});
   session.sock = null;
   session.status = "disconnected";
@@ -113,7 +161,7 @@ export async function sendWhatsAppMessage(
   if (session.status !== "connected" || !session.sock) {
     return (
       `WhatsApp non connecté : impossible d'envoyer le message à ${to}. ` +
-      `Rendez-vous dans Paramètres pour scanner le QR code et connecter votre WhatsApp.`
+      `Rendez-vous dans Paramètres pour connecter votre WhatsApp.`
     );
   }
 

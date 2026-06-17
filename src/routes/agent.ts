@@ -11,7 +11,7 @@ import {
 } from "../memory/memoryStore.js";
 import { getAgentConversationHistory, getOrCreateAgentConversation, respond } from "../agent/reasoningEngine.js";
 import { computeNextRun, runTask, type Frequency, type ScheduledTask } from "../agent/scheduler.js";
-import { disconnectWhatsApp, getWhatsAppStatus, requestPairingCode } from "../integrations/whatsapp.js";
+import { disconnectWhatsApp, getWhatsAppStatus, reconnectWhatsApp, requestPairingCode } from "../integrations/whatsapp.js";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -190,6 +190,11 @@ agentRouter.post("/whatsapp/pairing-code", async (req, res) => {
   } catch (error) {
     res.status(500).json({ error: (error as Error).message });
   }
+});
+
+agentRouter.post("/whatsapp/reconnect", async (req, res) => {
+  await reconnectWhatsApp(req.tenantId!);
+  res.json({ ok: true });
 });
 
 agentRouter.post("/whatsapp/disconnect", async (req, res) => {
