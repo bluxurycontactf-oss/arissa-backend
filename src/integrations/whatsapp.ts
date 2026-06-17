@@ -502,13 +502,15 @@ export async function reconnectWhatsApp(tenantId: string): Promise<void> {
 export async function requestPairingCode(tenantId: string, phoneNumber: string): Promise<string> {
   const session = getSession(tenantId);
 
-  if (!session.sock || session.status === "expired") {
-    await connect(tenantId);
-  } else {
-    startExpiryTimer(tenantId, session);
-  }
+  // Le code d'appairage doit être demandé sur une connexion neuve : réutiliser un socket déjà
+  // engagé dans le flux QR (même partiellement) fait que WhatsApp ferme la connexion.
+  clearExpiryTimer(session);
+  session.sock?.end(undefined);
+  session.qr = null;
+  session.pairingCode = null;
+  await connect(tenantId);
 
-  const sock = session.sock;
+  const sock: WASocket | null = session.sock;
   if (!sock) throw new Error("Connexion WhatsApp non disponible, réessayez.");
 
   const digits = phoneNumber.replace(/\D/g, "");
