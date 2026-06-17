@@ -175,6 +175,16 @@ agentRouter.delete("/tasks/:id", (req, res) => {
   res.json({ ok: true });
 });
 
+agentRouter.get("/stats", (req, res) => {
+  const t = req.tenantId!;
+  const messages = (db.prepare(`SELECT COUNT(*) as c FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE c.tenant_id=? AND c.kind='agent'`).get(t) as { c: number }).c;
+  const memories = (db.prepare(`SELECT COUNT(*) as c FROM memory_facts WHERE tenant_id=?`).get(t) as { c: number }).c;
+  const documents = (db.prepare(`SELECT COUNT(*) as c FROM documents WHERE tenant_id=?`).get(t) as { c: number }).c;
+  const totalRuns = (db.prepare(`SELECT COALESCE(SUM(run_count),0) as c FROM scheduled_tasks WHERE tenant_id=?`).get(t) as { c: number }).c;
+  const tasks = db.prepare(`SELECT id, title, run_count, last_run_at, enabled FROM scheduled_tasks WHERE tenant_id=? ORDER BY run_count DESC`).all(t);
+  res.json({ messages, memories, documents, totalRuns, tasks });
+});
+
 agentRouter.post("/tasks/:id/run", async (req, res) => {
   const tenant = req.tenantId!;
   const id = Number(req.params.id);

@@ -30,7 +30,7 @@ export function computeNextRun(frequency: Frequency, from: Date = new Date()): s
 }
 
 const updateAfterRun = db.prepare(
-  `UPDATE scheduled_tasks SET conversation_id = ?, last_run_at = datetime('now'), last_result = ?, next_run_at = ? WHERE id = ?`
+  `UPDATE scheduled_tasks SET conversation_id = ?, last_run_at = datetime('now'), last_result = ?, next_run_at = ?, run_count = run_count + 1 WHERE id = ?`
 );
 
 export async function runTask(task: ScheduledTask): Promise<void> {

@@ -111,3 +111,5 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_chunks_tenant ON document_chunks(tenant_id);
   CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_tenant ON scheduled_tasks(tenant_id);
 `);
+
+try { db.exec(`ALTER TABLE scheduled_tasks ADD COLUMN run_count INTEGER NOT NULL DEFAULT 0`); } catch {}
