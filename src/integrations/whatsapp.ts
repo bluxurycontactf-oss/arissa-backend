@@ -80,33 +80,31 @@ type WhatsAppSettings = {
   tenant_id: string;
   unlock_viewonce: number;
   anti_delete: number;
-  status_forward: number;
   appear_online: number;
 };
 
 const DEFAULT_SETTINGS: Omit<WhatsAppSettings, "tenant_id"> = {
   unlock_viewonce: 1,
   anti_delete: 1,
-  status_forward: 0,
   appear_online: 0,
 };
 
 export function getWhatsAppSettings(tenantId: string): WhatsAppSettings {
-  const existing = db.prepare(`SELECT * FROM whatsapp_settings WHERE tenant_id = ?`).get(tenantId) as
+  const existing = db.prepare(`SELECT tenant_id, unlock_viewonce, anti_delete, appear_online FROM whatsapp_settings WHERE tenant_id = ?`).get(tenantId) as
     | WhatsAppSettings
     | undefined;
   if (existing) return existing;
 
   db.prepare(
-    `INSERT INTO whatsapp_settings (tenant_id, unlock_viewonce, anti_delete, status_forward, appear_online) VALUES (?, ?, ?, ?, ?)`
-  ).run(tenantId, DEFAULT_SETTINGS.unlock_viewonce, DEFAULT_SETTINGS.anti_delete, DEFAULT_SETTINGS.status_forward, DEFAULT_SETTINGS.appear_online);
+    `INSERT INTO whatsapp_settings (tenant_id, unlock_viewonce, anti_delete, appear_online) VALUES (?, ?, ?, ?)`
+  ).run(tenantId, DEFAULT_SETTINGS.unlock_viewonce, DEFAULT_SETTINGS.anti_delete, DEFAULT_SETTINGS.appear_online);
 
   return { tenant_id: tenantId, ...DEFAULT_SETTINGS };
 }
 
 export function updateWhatsAppSettings(
   tenantId: string,
-  patch: { unlockViewonce?: boolean; antiDelete?: boolean; statusForward?: boolean; appearOnline?: boolean }
+  patch: { unlockViewonce?: boolean; antiDelete?: boolean; appearOnline?: boolean }
 ): WhatsAppSettings {
   const current = getWhatsAppSettings(tenantId);
 
@@ -114,13 +112,12 @@ export function updateWhatsAppSettings(
     tenant_id: tenantId,
     unlock_viewonce: patch.unlockViewonce === undefined ? current.unlock_viewonce : patch.unlockViewonce ? 1 : 0,
     anti_delete: patch.antiDelete === undefined ? current.anti_delete : patch.antiDelete ? 1 : 0,
-    status_forward: patch.statusForward === undefined ? current.status_forward : patch.statusForward ? 1 : 0,
     appear_online: patch.appearOnline === undefined ? current.appear_online : patch.appearOnline ? 1 : 0,
   };
 
   db.prepare(
-    `UPDATE whatsapp_settings SET unlock_viewonce = ?, anti_delete = ?, status_forward = ?, appear_online = ? WHERE tenant_id = ?`
-  ).run(next.unlock_viewonce, next.anti_delete, next.status_forward, next.appear_online, tenantId);
+    `UPDATE whatsapp_settings SET unlock_viewonce = ?, anti_delete = ?, appear_online = ? WHERE tenant_id = ?`
+  ).run(next.unlock_viewonce, next.anti_delete, next.appear_online, tenantId);
 
   const session = sessions.get(tenantId);
   if (session?.sock?.user?.id) {
@@ -318,30 +315,10 @@ async function handleDeletedMessage(sock: WASocket, messageId: string): Promise<
   }
 }
 
-async function handleIncomingStatus(sock: WASocket, msg: WAMessage, settings: WhatsAppSettings): Promise<void> {
-  await sock.readMessages([msg.key]).catch(() => {});
-
-  if (settings.status_forward !== 1) return;
-
-  const senderJid = msg.key.participant;
-  const ownerJid = sock.user?.id ? jidNormalizedUser(sock.user.id) : null;
-  if (!senderJid || !ownerJid) return;
-
-  const senderLabel = senderJid.split("@")[0];
-  const mediaInfo = extractMediaInfo(msg.message);
-  const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || "";
-
-  try {
-    if (mediaInfo?.type === "image" || mediaInfo?.type === "video") {
-      const buffer = await downloadMediaMessage(msg, "buffer", {});
-      const caption = `📣 Statut de ${senderLabel}${mediaInfo.caption ? ` :\n${mediaInfo.caption}` : ""}`;
-      await sock.sendMessage(ownerJid, mediaInfo.type === "video" ? { video: buffer, caption } : { image: buffer, caption });
-    } else if (text.trim()) {
-      await sock.sendMessage(ownerJid, { text: `📣 Statut de ${senderLabel} :\n\n${text.trim()}` });
-    }
-  } catch (error) {
-    console.error("Erreur lors de la transmission d'un statut WhatsApp :", error);
-  }
+async function handleIncomingStatus(sock: WASocket, msg: WAMessage): Promise<void> {
+  await sock.readMessages([msg.key]).catch((error) => {
+    console.error("Erreur lors du visionnage automatique d'un statut WhatsApp :", error);
+  });
 }
 
 async function handleIncomingWhatsAppMessage(tenantId: string, sock: WASocket, jid: string, text: string): Promise<void> {
@@ -409,7 +386,7 @@ async function connect(tenantId: string, opts?: { isRetry?: boolean }): Promise<
       if (!jid) continue;
 
       if (jid === "status@broadcast") {
-        if (!msg.key.fromMe) handleIncomingStatus(sock, msg, settings).catch(() => {});
+        if (!msg.key.fromMe) handleIncomingStatus(sock, msg).catch(() => {});
         continue;
       }
 

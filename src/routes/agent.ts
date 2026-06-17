@@ -224,13 +224,12 @@ agentRouter.get("/whatsapp/settings", (req, res) => {
 });
 
 agentRouter.patch("/whatsapp/settings", (req, res) => {
-  const { unlockViewonce, antiDelete, statusForward, appearOnline } = req.body as {
+  const { unlockViewonce, antiDelete, appearOnline } = req.body as {
     unlockViewonce?: boolean;
     antiDelete?: boolean;
-    statusForward?: boolean;
     appearOnline?: boolean;
   };
-  const settings = updateWhatsAppSettings(req.tenantId!, { unlockViewonce, antiDelete, statusForward, appearOnline });
+  const settings = updateWhatsAppSettings(req.tenantId!, { unlockViewonce, antiDelete, appearOnline });
   res.json({ settings });
 });
 

@@ -124,7 +124,6 @@ db.exec(`
     tenant_id TEXT PRIMARY KEY,
     unlock_viewonce INTEGER NOT NULL DEFAULT 1,
     anti_delete INTEGER NOT NULL DEFAULT 1,
-    status_forward INTEGER NOT NULL DEFAULT 0,
     appear_online INTEGER NOT NULL DEFAULT 0
   );
 
