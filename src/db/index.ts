@@ -110,6 +110,14 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_chunks_document ON document_chunks(document_id);
   CREATE INDEX IF NOT EXISTS idx_chunks_tenant ON document_chunks(tenant_id);
   CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_tenant ON scheduled_tasks(tenant_id);
+
+  CREATE TABLE IF NOT EXISTS whatsapp_conversations (
+    tenant_id TEXT NOT NULL,
+    jid TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (tenant_id, jid)
+  );
 `);
 
 try { db.exec(`ALTER TABLE scheduled_tasks ADD COLUMN run_count INTEGER NOT NULL DEFAULT 0`); } catch {}

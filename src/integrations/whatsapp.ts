@@ -5,6 +5,7 @@ import makeWASocket, { useMultiFileAuthState, DisconnectReason } from "@whiskeys
 import type { WASocket } from "@whiskeysockets/baileys";
 import QRCode from "qrcode";
 import { Boom } from "@hapi/boom";
+import { db } from "../db/index.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const sessionsDir = join(__dirname, "../../data/whatsapp_sessions");
@@ -46,6 +47,28 @@ function startExpiryTimer(tenantId: string, session: Session) {
   }, SESSION_EXPIRY_MS);
 }
 
+const getWaConversation = db.prepare(
+  `SELECT conversation_id FROM whatsapp_conversations WHERE tenant_id = ? AND jid = ?`
+);
+const insertWaConversation = db.prepare(
+  `INSERT INTO whatsapp_conversations (tenant_id, jid, conversation_id) VALUES (?, ?, ?)`
+);
+
+async function handleIncomingWhatsAppMessage(tenantId: string, sock: WASocket, jid: string, text: string): Promise<void> {
+  const { respond, getOrCreateAgentConversation } = await import("../agent/reasoningEngine.js");
+
+  const existing = getWaConversation.get(tenantId, jid) as { conversation_id: string } | undefined;
+  const conversationId = getOrCreateAgentConversation(existing?.conversation_id, tenantId);
+  if (!existing) insertWaConversation.run(tenantId, jid, conversationId);
+
+  try {
+    const reply = await respond(text, conversationId, tenantId);
+    await sock.sendMessage(jid, { text: reply });
+  } catch (error) {
+    console.error("Erreur lors du traitement d'un message WhatsApp entrant :", error);
+  }
+}
+
 async function expireSession(tenantId: string): Promise<void> {
   const session = getSession(tenantId);
   if (session.status === "connected") return;
@@ -70,6 +93,22 @@ async function connect(tenantId: string, opts?: { isRetry?: boolean }): Promise<
   session.sock = sock;
 
   sock.ev.on("creds.update", saveCreds);
+
+  sock.ev.on("messages.upsert", ({ messages, type }) => {
+    if (type !== "notify") return;
+
+    for (const msg of messages) {
+      const jid = msg.key.remoteJid;
+      if (!jid || msg.key.fromMe || jid.endsWith("@g.us") || jid === "status@broadcast") continue;
+
+      const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || "";
+      if (!text.trim()) continue;
+
+      handleIncomingWhatsAppMessage(tenantId, sock, jid, text.trim()).catch((error) => {
+        console.error("Erreur lors du traitement d'un message WhatsApp entrant :", error);
+      });
+    }
+  });
 
   sock.ev.on("connection.update", async (update) => {
     const { connection, qr, lastDisconnect } = update;
